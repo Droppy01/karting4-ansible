@@ -218,27 +218,3 @@
      - name: reload systemd
        become: yes
        command: systemctl daemon-reload
-
-     - name: start docker service containers
-       become: yes
-       ansible.builtin.systemd:
-         state: started
-         name: docker-karting4-server.service
-
-     - name: wait 30 sec for container to fully boot
-       pause:
-         seconds: 30
-
-     - name: db make:migration
-       become: yes
-       become_user: karting4
-       ansible.builtin.command: symfony console make:migration 
-       args:
-         chdir:  /usr/local/src/karting4/
-
-
-     - name: stop container
-       become: yes
-       ansible.builtin.systemd:
-         state: stopped
-         name: docker-karting4-server.service
