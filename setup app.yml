@@ -225,9 +225,9 @@
          state: started
          name: docker-karting4-server.service
 
-     - name: wait 20 sec for container to fully boot
+     - name: wait 30 sec for container to fully boot
        pause:
-         seconds: 20
+         seconds: 30
 
      - name: db make:migration
        become: yes
