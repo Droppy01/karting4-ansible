@@ -1,0 +1,244 @@
+--- 
+
+ - hosts: localhost
+   name: install karting4 app
+   become_user: root
+   
+   tasks:
+     - name: install tasks dependesies
+       become: yes 
+       apt:
+         pkg:
+           - gpg
+           - python3-apt
+
+     - name: add synfony-cli apt repo
+       become: yes
+       ansible.builtin.apt_repository:
+         repo: deb [trusted=yes] https://repo.symfony.com/apt/ /
+         state: present
+         filename: symfony-cli
+
+     - name: install synfony-cli
+       become: yes
+       apt: 
+         name: symfony-cli
+         state: latest
+         update_cache: yes
+     
+     - name: install docker repo key
+       become: yes
+       apt_key:
+         url: https://download.docker.com/linux/ubuntu/gpg
+         state: present
+         keyring: /usr/share/keyrings/docker-archive-keyring.gpg
+
+     - name: add docker apt repo
+       become: yes
+       ansible.builtin.apt_repository:
+         repo: deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu   impish stable
+         state: present
+
+     - name: install docker
+       become: yes
+       apt:
+         pkg: 
+           - docker-ce
+           - docker-ce-cli
+           - containerd.io
+         state: latest
+         update_cache: yes
+
+     - name: install docker-compose from website
+       become: yes
+       get_url: 
+         url: https://github.com/docker/compose/releases/download/1.29.2/docker-compose-Linux-x86_64
+         dest: /usr/local/bin/docker-compose
+         owner: root
+         group: root
+         mode: "u=rwx,g=rx,o=rx"
+
+     - name: install php ppa repo
+       become: yes
+       apt_repository:
+         repo: ppa:ondrej/php
+         state: present
+
+     - name: install php8 and plugins (xml & apcu)
+       become: yes
+       apt:
+         pkg: 
+           - php8.0
+           - php8.0-xml
+           - php8.0-apcu
+           - php8.0-pgsql # PostgreSQL
+         state: latest
+
+     - name: add sourceCode group
+       become: yes
+       ansible.builtin.group:
+         name: sourceCode
+         state: present
+
+     - name: create project user (karting4)
+       become: yes
+       ansible.builtin.user:
+         name: karting4
+         shell: /bin/bash
+         groups: docker,sourceCode
+         append: yes
+
+     - name: create code dir
+       become: yes
+       file: 
+          path: /usr/local/src/karting4
+          mode: u=rwx,g=rwx,o=
+          owner: karting4
+          group: sourceCode
+          state: directory
+
+     - name: get code from github
+       become: yes
+       become_user: karting4
+       git:
+         repo: https://github.com/mjlinden/karting4.git
+         dest: /usr/local/src/karting4
+
+     - name: remove WebServerBundle from *project*/config/bundles.php
+       become: yes
+       become_user: karting4
+       ansible.builtin.lineinfile:
+         dest: /usr/local/src/karting4/config/bundles.php
+         state: absent
+         regexp: ' *Symfony\\Bundle\\WebServerBundle\\WebServerBundle::class.*],'
+
+     - name: install composer plugins via symfony-cli
+       become: yes
+       become_user: karting4
+       ansible.builtin.command: symfony composer install --no-interaction
+       args:
+         chdir:  /usr/local/src/karting4/
+
+     - name: install docker-composer files (1/2) 
+       become: yes
+       become_user: karting4
+       copy:
+         content: |
+            version: '3'
+
+            services:
+            ###> doctrine/doctrine-bundle ###
+              database:
+                image: postgres:${POSTGRES_VERSION:-13}-alpine
+                environment:
+                  POSTGRES_DB: ${POSTGRES_DB:-app}
+                  # You should definitely change the password in production
+                  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeMe}
+                  POSTGRES_USER: ${POSTGRES_USER:-symfony}
+                volumes:
+                  - db-data:/var/lib/postgresql/data:rw
+                  # You may use a bind-mounted host directory instead, so that it is harder to accidentally remove the volume and lose all your data!
+                  # - ./docker/db/data:/var/lib/postgresql/data:rw
+            ###< doctrine/doctrine-bundle ###
+
+            volumes:
+            ###> doctrine/doctrine-bundle ###
+              db-data:
+            ###< doctrine/doctrine-bundle ###
+        
+         #endfile
+
+         dest: /usr/local/src/karting4/docker-compose.yml
+
+
+     - name: install docker-composer files (2/2) 
+       become: yes
+       become_user: karting4
+       copy:
+         content: |
+
+           version: '3'
+
+           services:
+           ###> symfony/mailer ###
+              mailer:
+                 image: schickling/mailcatcher
+                 ports: [1025, 1080]
+           ###< symfony/mailer ###
+
+           ###> doctrine/doctrine-bundle ###
+              database:
+                 ports:
+                    - "5432"
+           ###< doctrine/doctrine-bundle ###
+         #endfile
+
+         dest: /usr/local/src/karting4/docker-compose.override.yml
+
+     - name: create docker service file
+       become: yes
+       copy:
+         content: |
+           [Unit]
+           Description=docker karting4 project
+           Requires=docker.service
+           After=docker.service
+
+           [Service]
+           User=karting4
+           ExecStart=/usr/local/bin/docker-compose --project-directory /usr/local/src/karting4/ up
+           
+           [Install]
+           WantedBy=multi-user.target
+         dest: /etc/systemd/system/docker-karting4-server.service
+         owner: root
+         group: root
+         mode: u=rw,g=rw,o=r
+
+     - name: create service file symfony
+       become: yes
+       copy:
+         content: |
+           [Unit]
+           Description=serve karting4 project
+           Requires=docker-karting4-server.service
+           After=docker-karting4-server.service
+
+           [Service]
+           User=karting4
+           ExecStart=/usr/bin/symfony local:server:start --dir=/usr/local/src/karting4/
+           
+           [Install]
+           WantedBy=multi-user.target
+         dest: /etc/systemd/system/karting4-server.service
+         owner: root
+         group: root
+         mode: u=rw,g=rw,o=r
+
+     - name: reload systemd
+       become: yes
+       command: systemctl daemon-reload
+
+     - name: start docker service containers
+       become: yes
+       ansible.builtin.systemd:
+         state: started
+         name: docker-karting4-server.service
+
+     - name: wait 20 sec for container to fully boot
+       pause:
+         seconds: 20
+
+     - name: db make:migration
+       become: yes
+       become_user: karting4
+       ansible.builtin.command: symfony console make:migration 
+       args:
+         chdir:  /usr/local/src/karting4/
+
+
+     - name: stop container
+       become: yes
+       ansible.builtin.systemd:
+         state: stopped
+         name: docker-karting4-server.service
